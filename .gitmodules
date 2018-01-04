@@ -1,0 +1,3 @@
+[submodule "InertialSenseSDK"]
+	path = src/InertialSenseSDK
+	url = git@github.com:inertialsense/InertialSenseSDK.git
