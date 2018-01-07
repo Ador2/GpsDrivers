@@ -159,7 +159,7 @@ public:
 	 * @return 0 on success, <0 on error
 	 */
 	virtual int restartSurveyIn() { return 0; }
-	virtual void setSurveyInSpecs(uint32_t survey_in_acc_limit, uint32_t survey_in_min_dur) = 0;
+	void setSurveyInSpecs(uint32_t survey_in_acc_limit, uint32_t survey_in_min_dur){};
 
 
 protected:
