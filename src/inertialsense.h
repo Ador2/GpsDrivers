@@ -46,7 +46,7 @@
 #include "gps_helper.h"
 #include "../../definitions.h"
 
-# define GPS_UTC_OFFSET 315964782 // as of 2017
+#define GPS_UTC_OFFSET 315964782 // as of 2017
 
 #include "InertialSenseSDK/src/com_manager.h"
 
