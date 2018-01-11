@@ -40,6 +40,7 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
   if (output_mode == OutputMode::RTCM)
   {
     uINS_sys_config = SYS_CFG_BITS_RTK_BASE_STATION;
+    setComManagerPassThrough(IS_RTCM_rx_wrapper);
   }
 
   // Configure the Appropriate sys_config bits to output RTCM
@@ -47,9 +48,8 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
 
   // Configure uINS to output GPS and GPS Satellite Info at 100 ms
   getDataComManager(0, DID_GPS, 0, 0, 100);
-  getDataComManager(0, DID_GPS_CNO, 0, 0, 100);
+//  getDataComManager(0, DID_GPS_CNO, 0, 0, 100);
 
-  setComManagerPassThrough(IS_RTCM_rx_wrapper);
   return 0;
 }
 
@@ -85,7 +85,7 @@ void GPSDriverInertialSense::GPS_callback(gps_t* data)
   {
     _gps_position->time_utc_usec = GPS_UTC_OFFSET + (uint64_t)(data->pos.week*7*24*3600*1e9f) + (uint64_t)(data->towOffset*1e9);
   }
-  _gps_position->satellites_used = _satellite_info->count;
+  _satellite_info->count = _gps_position->satellites_used = data->pos.status & (0x00FF);
 
   // For now, because we aren't getting a true survey status, let's just use the reported accuracy of the GPS position
   SurveyInStatus status;
@@ -93,22 +93,6 @@ void GPSDriverInertialSense::GPS_callback(gps_t* data)
   status.flags = (_gps_position->eph < 2.0f);
   status.mean_accuracy = _gps_position->eph*1000;
   surveyInStatus(status);
-}
-
-void GPSDriverInertialSense::GPS_Info_callback(gps_cno_t* data)
-{
-  _got_gps = true;
-
-  _satellite_info->count = data->numSats;
-  for (uint32_t i = 0; i < data->numSats; i++)
-  {
-    _satellite_info->svid[i] = data->info[i].svId;
-    _satellite_info->used[i] = true;
-    // TODO: These are not published by the InertialSense
-    _satellite_info->elevation[i] = 45;
-    _satellite_info->elevation[i] = 0;
-    _satellite_info->snr[i] = data->info[i].cno;
-  }
 }
 
 int GPSDriverInertialSense::IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buffer_t* bufferToSend)
@@ -138,9 +122,6 @@ void GPSDriverInertialSense::IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, 
   {
   case DID_GPS:
     instance->GPS_callback((gps_t*)dataRead->buf);
-    break;
-  case DID_GPS_CNO:
-    instance->GPS_Info_callback((gps_cno_t*)dataRead->buf);
     break;
   default:
     break;
