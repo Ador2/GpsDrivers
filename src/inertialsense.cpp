@@ -33,7 +33,7 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
   uint32_t uINS_sys_config = 0;
   if (output_mode == OutputMode::RTCM)
   {
-    uINS_sys_config = 0xC0;
+    uINS_sys_config = SYS_CFG_BITS_RTK_BASE_STATION;
   }
 
   // Configure the Appropriate sys_config bits to output RTCM
