@@ -48,10 +48,11 @@
 
 #define GPS_UTC_OFFSET 315964782 // as of 2017
 
+extern "C" {
 #include "InertialSenseSDK/src/com_manager.h"
 #include "InertialSenseSDK/src/data_sets.h"
 #include "InertialSenseSDK/src/ISPose.h"
-
+}
 class GPSDriverInertialSense : public GPSHelper
 {
 public:
