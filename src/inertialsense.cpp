@@ -36,25 +36,38 @@ GPSDriverInertialSense::~GPSDriverInertialSense()
 int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
 {
   // Set the output_mode
-  uint32_t uINS_sys_config = 0;
+  uint32_t uINS_sys_config = SYS_CFG_BITS_RTK_ROVER;
   if (output_mode == OutputMode::RTCM)
   {
     uINS_sys_config = SYS_CFG_BITS_RTK_BASE_STATION;
     setComManagerPassThrough(IS_RTCM_rx_wrapper);
   }
 
-  // Configure the Appropriate sys_config bits to output RTCM
-  sendDataComManager(0, DID_FLASH_CONFIG, &uINS_sys_config, sizeof(uint32_t), OFFSETOF(nvm_flash_cfg_t, sysCfgBits));
 
-  // Configure uINS to output GPS and GPS Satellite Info at 100 ms
-  getDataComManager(0, DID_GPS, 0, 0, 100);
-//  getDataComManager(0, DID_GPS_CNO, 0, 0, 100);
+  // Configure the Appropriate sys_config bits for RTCM handling
+  int res = sendDataComManager(0, DID_FLASH_CONFIG, &uINS_sys_config, sizeof(uint32_t), OFFSETOF(nvm_flash_cfg_t, sysCfgBits));
+  PX4_ERR("sys config bits = %b", uINS_sys_config);
+  PX4_ERR("IS error %d", res);
+  // Configure uINS to output GPS Info at 100 ms
+  int res2 = getDataComManager(0, DID_GPS, 0, 0, 100);
+  PX4_ERR("IS error2 %d", res2);
 
-  return 0;
+  if (receive(10000) != 0)
+  {
+    PX4_ERR("found IS");
+    return 0;
+  }
+  else
+  {
+    PX4_ERR("missing IS");
+    return -1;
+  }
+
 }
 
 void GPSDriverInertialSense::GPS_callback(gps_t* data)
 {
+  PX4_ERR("IS got GPS message");
   _got_sat_info = true;
   _gps_position->lat = (int32_t)(data->pos.lla[0]*1e7);
   _gps_position->lon = (int32_t)(data->pos.lla[1]*1e7);
@@ -97,6 +110,7 @@ void GPSDriverInertialSense::GPS_callback(gps_t* data)
 
 int GPSDriverInertialSense::IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buffer_t* bufferToSend)
 {
+  PX4_ERR("sending IS data");
   (void)cmHandle;
   (void)pHandle;
   GPSDriverInertialSense* instance = (GPSDriverInertialSense*)comManagerGetUserPointer(getGlobalComManager());
@@ -105,14 +119,21 @@ int GPSDriverInertialSense::IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buf
 
 int GPSDriverInertialSense::IS_read_wrapper(CMHANDLE cmHandle, int pHandle, unsigned char* readIntoBytes, int numberOfBytes)
 {
+//  PX4_ERR("read");
   (void)cmHandle;
   (void)pHandle;
   GPSDriverInertialSense* instance = (GPSDriverInertialSense*)comManagerGetUserPointer(getGlobalComManager());
-  return instance->read(readIntoBytes, numberOfBytes, 2);
+  int ret = instance->read(readIntoBytes, numberOfBytes, 2);
+  if (ret != 0)
+  {
+//    PX4_ERR("read %d bytes", ret);
+  }
+  return ret;
 }
 
 void GPSDriverInertialSense::IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, p_data_t *dataRead)
 {
+  PX4_ERR("got message");
   (void)cmHandle;
   (void)pHandle;
   GPSDriverInertialSense* instance = (GPSDriverInertialSense*)comManagerGetUserPointer(getGlobalComManager());
@@ -124,6 +145,7 @@ void GPSDriverInertialSense::IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, 
     instance->GPS_callback((gps_t*)dataRead->buf);
     break;
   default:
+    PX4_ERR("got message unmanaged");
     break;
   }
 }
@@ -146,12 +168,13 @@ int GPSDriverInertialSense::receive(unsigned timeout)
   _got_sat_info = false;
   _got_gps = false;
 
-  stepComManager();
-
   gps_abstime time_started = gps_absolute_time();
 
   // Wait for a callback to occur
-  while ((gps_absolute_time() < time_started + timeout*1000) && !(_got_gps || _got_sat_info)){}
+  while ((gps_absolute_time() < time_started + timeout*1000) && !(_got_gps || _got_sat_info))
+  {
+    stepComManager();
+  }
   uint8_t ret = 0;
 
   if (_got_gps)

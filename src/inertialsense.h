@@ -48,9 +48,8 @@
 
 #define GPS_UTC_OFFSET 315964782 // as of 2017
 
-#define PKT_BUF_SIZE 300
-#define MAX_DATASET_SIZE 80
 #include "InertialSenseSDK/src/com_manager.h"
+#include "InertialSenseSDK/src/data_sets.h"
 
 class GPSDriverInertialSense : public GPSHelper
 {
