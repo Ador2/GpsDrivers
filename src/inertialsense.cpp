@@ -46,14 +46,12 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
   getDataComManager(0, DID_GPS, 0, 0, 100);
   getDataComManager(0, DID_INS_2, 0, 0, 100);
 
-  if (receive(10000) != 0)
+  if (receive(1000) != 0)
   {
-    PX4_ERR("found IS");
     return 0;
   }
   else
   {
-    PX4_ERR("missing IS");
     return -1;
   }
 
