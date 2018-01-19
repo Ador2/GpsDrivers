@@ -7,9 +7,6 @@ using namespace std::placeholders;
 #define IS_WARN(...)		{GPS_WARN(__VA_ARGS__);}
 #define IS_DEBUG(...)		{/*GPS_WARN(__VA_ARGS__);*/}
 
-//static GPSDriverInertialSense* hacky_gps_driver_global_pointer_;
-//static CMHANDLE g_com_manager_;
-
 GPSDriverInertialSense::GPSDriverInertialSense(Interface gpsInterface, GPSCallbackPtr callback, void *callback_user,
 																							 struct vehicle_gps_position_s *gps_position,
 																							 struct satellite_info_s *satellite_info)
@@ -31,7 +28,6 @@ GPSDriverInertialSense::~GPSDriverInertialSense()
  * configure the device
  * @param baud will be set to the baudrate (output parameter)
  * @return 0 on success, <0 otherwise
- * TODO:: Needs to return properly
  */
 int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
 {
@@ -45,12 +41,10 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
 
 
   // Configure the Appropriate sys_config bits for RTCM handling
-  int res = sendDataComManager(0, DID_FLASH_CONFIG, &uINS_sys_config, sizeof(uint32_t), OFFSETOF(nvm_flash_cfg_t, sysCfgBits));
-  PX4_ERR("sys config bits = %b", uINS_sys_config);
-  PX4_ERR("IS error %d", res);
-  // Configure uINS to output GPS Info at 100 ms
-  int res2 = getDataComManager(0, DID_GPS, 0, 0, 100);
-  PX4_ERR("IS error2 %d", res2);
+  sendDataComManager(0, DID_FLASH_CONFIG, &uINS_sys_config, sizeof(uint32_t), OFFSETOF(nvm_flash_cfg_t, sysCfgBits));
+  // Configure uINS to output GPS and INS Info at 100 ms
+  getDataComManager(0, DID_GPS, 0, 0, 100);
+  getDataComManager(0, DID_INS_2, 0, 0, 100);
 
   if (receive(10000) != 0)
   {
@@ -65,13 +59,28 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
 
 }
 
+void GPSDriverInertialSense::INS_callback(ins_2_t* data)
+{
+  _got_gps = true;
+
+  _gps_position->lat = (int32_t)(data->lla[0]*1e7);
+  _gps_position->lon = (int32_t)(data->lla[1]*1e7);
+  _gps_position->alt = (int32_t)(data->lla[2]*1e3);
+
+  float vel_ned[3];
+  quatRot(vel_ned, data->qn2b, data->uvw);
+
+  _gps_position->vel_n_m_s = vel_ned[0];
+  _gps_position->vel_e_m_s = vel_ned[1];
+  _gps_position->vel_d_m_s = vel_ned[2];
+}
+
+
 void GPSDriverInertialSense::GPS_callback(gps_t* data)
 {
-  PX4_ERR("IS got GPS message");
   _got_sat_info = true;
-  _gps_position->lat = (int32_t)(data->pos.lla[0]*1e7);
-  _gps_position->lon = (int32_t)(data->pos.lla[1]*1e7);
-  _gps_position->alt = (int32_t)(data->pos.lla[2]*1e3);
+  _got_gps = true;
+
   _gps_position->alt_ellipsoid = (int32_t)(data->pos.hMSL * 1e3f);
 
   _gps_position->s_variance_m_s = data->vel.sAcc;
@@ -87,11 +96,26 @@ void GPSDriverInertialSense::GPS_callback(gps_t* data)
   _gps_position->jamming_indicator = 0.0f;
 
   _gps_position->vel_m_s = data->vel.s2D;
-  _gps_position->vel_n_m_s = data->vel.ned[0];
-  _gps_position->vel_e_m_s = data->vel.ned[1];
-  _gps_position->vel_d_m_s = data->vel.ned[2];
   _gps_position->cog_rad = data->vel.course;
   _gps_position->vel_ned_valid = true;
+
+  // Map fix type to mavlink
+  uint32_t fix_type = data->pos.status & GPS_STATUS_FIX_TYPE_MASK;
+  switch(fix_type)
+  {
+  case (GPS_STATUS_FIX_TYPE_NO_FIX):
+    _gps_position->fix_type = 0;
+    break;
+  case (GPS_STATUS_FIX_TYPE_2D_FIX):
+    _gps_position->fix_type = 2;
+    break;
+  case (GPS_STATUS_FIX_TYPE_3D_FIX):
+    _gps_position->fix_type = 3;
+    break;
+  default:
+    _gps_position->fix_type = 0;
+    break;
+  }
 
   _gps_position->timestamp_time_relative = gps_absolute_time() - start_time;
   if (data->pos.week > 0)
@@ -99,6 +123,8 @@ void GPSDriverInertialSense::GPS_callback(gps_t* data)
     _gps_position->time_utc_usec = GPS_UTC_OFFSET + (uint64_t)(data->pos.week*7*24*3600*1e9f) + (uint64_t)(data->towOffset*1e9);
   }
   _satellite_info->count = _gps_position->satellites_used = data->pos.status & (0x00FF);
+
+
 
   // For now, because we aren't getting a true survey status, let's just use the reported accuracy of the GPS position
   SurveyInStatus status;
@@ -110,7 +136,6 @@ void GPSDriverInertialSense::GPS_callback(gps_t* data)
 
 int GPSDriverInertialSense::IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buffer_t* bufferToSend)
 {
-  PX4_ERR("sending IS data");
   (void)cmHandle;
   (void)pHandle;
   GPSDriverInertialSense* instance = (GPSDriverInertialSense*)comManagerGetUserPointer(getGlobalComManager());
@@ -119,21 +144,15 @@ int GPSDriverInertialSense::IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buf
 
 int GPSDriverInertialSense::IS_read_wrapper(CMHANDLE cmHandle, int pHandle, unsigned char* readIntoBytes, int numberOfBytes)
 {
-//  PX4_ERR("read");
   (void)cmHandle;
   (void)pHandle;
   GPSDriverInertialSense* instance = (GPSDriverInertialSense*)comManagerGetUserPointer(getGlobalComManager());
   int ret = instance->read(readIntoBytes, numberOfBytes, 2);
-  if (ret != 0)
-  {
-//    PX4_ERR("read %d bytes", ret);
-  }
   return ret;
 }
 
 void GPSDriverInertialSense::IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, p_data_t *dataRead)
 {
-  PX4_ERR("got message");
   (void)cmHandle;
   (void)pHandle;
   GPSDriverInertialSense* instance = (GPSDriverInertialSense*)comManagerGetUserPointer(getGlobalComManager());
@@ -144,8 +163,11 @@ void GPSDriverInertialSense::IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, 
   case DID_GPS:
     instance->GPS_callback((gps_t*)dataRead->buf);
     break;
+  case DID_INS_2:
+    instance->INS_callback((ins_2_t*)dataRead->buf);
+    break;
   default:
-    PX4_ERR("got message unmanaged");
+//    IS_WARN("got message unmanaged");
     break;
   }
 }

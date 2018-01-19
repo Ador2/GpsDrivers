@@ -50,6 +50,7 @@
 
 #include "InertialSenseSDK/src/com_manager.h"
 #include "InertialSenseSDK/src/data_sets.h"
+#include "InertialSenseSDK/src/ISPose.h"
 
 class GPSDriverInertialSense : public GPSHelper
 {
@@ -70,7 +71,7 @@ public:
 
 private:
 	void GPS_callback(gps_t* data);
-	void GPS_Info_callback(gps_cno_t* data);
+	void INS_callback(ins_2_t* data);
 
 	bool			_got_gps;
 	bool		  _got_sat_info;
