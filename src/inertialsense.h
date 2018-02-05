@@ -47,11 +47,10 @@
 #include "../../definitions.h"
 
 #define GPS_UTC_OFFSET 315964782 // as of 2017
+#define IS_MESSAGE_BUFFER_SIZE 512
 
 extern "C" {
-#include "InertialSenseSDK/src/com_manager.h"
-#include "InertialSenseSDK/src/data_sets.h"
-#include "InertialSenseSDK/src/ISPose.h"
+#include "inertialsense_serial_protocol/ISComm.h"
 }
 class GPSDriverInertialSense : public GPSHelper
 {
@@ -65,14 +64,14 @@ public:
   void setSurveyInSpecs(uint32_t survey_in_acc_limit, uint32_t survey_in_min_dur);
   int restartSurveyIn();
 
-	static int IS_read_wrapper(CMHANDLE cmHandle, int pHandle, unsigned char* readIntoBytes, int numberOfBytes);
-	static int IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buffer_t* bufferToSend);
-	static void IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, p_data_t* dataRead);
-	static void IS_RTCM_rx_wrapper(CMHANDLE cmHandle, com_manager_pass_through_t passThroughType, int pHandle, const unsigned char* data, int dataLength);
+//	static int IS_read_wrapper(CMHANDLE cmHandle, int pHandle, unsigned char* readIntoBytes, int numberOfBytes);
+//	static int IS_write_wrapper(CMHANDLE cmHandle, int pHandle, buffer_t* bufferToSend);
+//	static void IS_post_rx_wrapper(CMHANDLE cmHandle, int pHandle, p_data_t* dataRead);
+//	static void IS_RTCM_rx_wrapper(CMHANDLE cmHandle, com_manager_pass_through_t passThroughType, int pHandle, const unsigned char* data, int dataLength);
 
 private:
-	void GPS_callback(gps_t* data);
-	void INS_callback(ins_2_t* data);
+	void GPS_callback(gps_nav_t* data);
+	void INS2_callback(ins_2_t* data);
 
 	bool			_got_gps;
 	bool		  _got_sat_info;
@@ -81,6 +80,8 @@ private:
 	struct satellite_info_s *_satellite_info {nullptr};
 
 	gps_abstime start_time;
+
+	uint8_t message_buffer_[IS_MESSAGE_BUFFER_SIZE];
 };
 
 
