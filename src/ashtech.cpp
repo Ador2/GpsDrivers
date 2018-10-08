@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2012-2016 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2012-2018 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -36,19 +36,37 @@
 #include <math.h>
 #include <string.h>
 #include <ctime>
+#include <cmath>
 
 #include "ashtech.h"
+#include "rtcm.h"
+
+#ifndef M_PI_F
+# define M_PI_F 3.14159265358979323846f
+#endif
+
+#define MIN(X,Y)	((X) < (Y) ? (X) : (Y))
+#define ASH_UNUSED(x) (void)x;
+
+//#define ASH_DEBUG(...)		{GPS_WARN(__VA_ARGS__);}
+#define ASH_DEBUG(...)		{/*GPS_WARN(__VA_ARGS__);*/}
 
 GPSDriverAshtech::GPSDriverAshtech(GPSCallbackPtr callback, void *callback_user,
 				   struct vehicle_gps_position_s *gps_position,
-				   struct satellite_info_s *satellite_info) :
-	GPSHelper(callback, callback_user),
+				   struct satellite_info_s *satellite_info, float heading_offset) :
+	GPSBaseStationSupport(callback, callback_user),
 	_satellite_info(satellite_info),
-	_gps_position(gps_position)
+	_gps_position(gps_position),
+	_heading_offset(heading_offset)
 {
 	decodeInit();
-	_decode_state = NME_DECODE_UNINIT;
-	_rx_buffer_bytes = 0;
+}
+
+GPSDriverAshtech::~GPSDriverAshtech()
+{
+	if (_rtcm_parsing) {
+		delete (_rtcm_parsing);
+	}
 }
 
 /*
@@ -93,8 +111,9 @@ int GPSDriverAshtech::handleMessage(int len)
 		Fields 5 and 6 together yield the total offset. For example, if field 5 is -5 and field 6 is +15, local time is 5 hours and 15 minutes earlier than GMT.
 		*/
 		double ashtech_time = 0.0;
-		int day = 0, month = 0, year = 0, local_time_off_hour __attribute__((unused)) = 0,
-		    local_time_off_min __attribute__((unused)) = 0;
+		int day = 0, month = 0, year = 0, local_time_off_hour = 0, local_time_off_min = 0;
+		ASH_UNUSED(local_time_off_min);
+		ASH_UNUSED(local_time_off_hour);
 
 		if (bufptr && *(++bufptr) != ',') { ashtech_time = strtod(bufptr, &endp); bufptr = endp; }
 
@@ -193,10 +212,14 @@ int GPSDriverAshtech::handleMessage(int len)
 		  The checksum data, always begins with *
 		  Note - If a user-defined geoid model, or an inclined
 		*/
-		double ashtech_time __attribute__((unused)) = 0.0, lat = 0.0, lon = 0.0, alt = 0.0;
-		int num_of_sv __attribute__((unused)) = 0, fix_quality = 0;
-		double hdop __attribute__((unused)) = 99.9;
+		double ashtech_time = 0.0, lat = 0.0, lon = 0.0, alt = 0.0;
+		int num_of_sv = 0, fix_quality = 0;
+		double hdop = 99.9;
 		char ns = '?', ew = '?';
+
+		ASH_UNUSED(ashtech_time);
+		ASH_UNUSED(num_of_sv);
+		ASH_UNUSED(hdop);
 
 		if (bufptr && *(++bufptr) != ',') { ashtech_time = strtod(bufptr, &endp); bufptr = endp; }
 
@@ -258,6 +281,32 @@ int GPSDriverAshtech::handleMessage(int len)
 		_gps_position->c_variance_rad = 0.1f;
 		ret = 1;
 
+	} else if (memcmp(_rx_buffer, "$GPHDT,", 7) == 0 && uiCalcComma == 2) {
+		/*
+		Heading message
+		Example $GPHDT,121.2,T*35
+
+		f1 Last computed heading value, in degrees (0-359.99)
+		T “T” for “True”
+		 */
+
+		float heading = 0.f;
+
+		if (bufptr && *(++bufptr) != ',') {
+			heading = strtof(bufptr, &endp); bufptr = endp;
+
+			ASH_DEBUG("heading update: %.3f", (double)heading);
+
+			heading *= M_PI_F / 180.0f; // deg to rad, now in range [0, 2pi]
+			heading -= _heading_offset; // range: [-pi, 3pi]
+
+			if (heading > M_PI_F) {
+				heading -= 2.f * M_PI_F; // final range is [-pi, pi]
+			}
+
+			_gps_position->heading = heading;
+		}
+
 	} else if ((memcmp(_rx_buffer, "$PASHR,POS,", 11) == 0) && (uiCalcComma == 18)) {
 		_got_pashr_pos_message = true;
 		/*
@@ -295,12 +344,17 @@ int GPSDriverAshtech::handleMessage(int len)
 		 * Ashtech would return empty space as coordinate (lat, lon or alt) if it doesn't have a fix yet
 		 */
 		int coordinatesFound = 0;
-		double ashtech_time __attribute__((unused)) = 0.0, lat = 0.0, lon = 0.0, alt = 0.0;
-		int num_of_sv __attribute__((unused)) = 0, fix_quality = 0;
-		double track_true = 0.0, ground_speed = 0.0, age_of_corr __attribute__((unused)) = 0.0;
-		double hdop = 99.9, vdop = 99.9,  pdop __attribute__((unused)) = 99.9,
-		       tdop __attribute__((unused)) = 99.9, vertic_vel = 0.0;
+		double ashtech_time = 0.0, lat = 0.0, lon = 0.0, alt = 0.0;
+		int num_of_sv = 0, fix_quality = 0;
+		double track_true = 0.0, ground_speed = 0.0, age_of_corr = 0.0;
+		double hdop = 99.9, vdop = 99.9,  pdop = 99.9, tdop = 99.9, vertic_vel = 0.0;
 		char ns = '?', ew = '?';
+
+		ASH_UNUSED(ashtech_time);
+		ASH_UNUSED(num_of_sv);
+		ASH_UNUSED(age_of_corr);
+		ASH_UNUSED(pdop);
+		ASH_UNUSED(tdop);
 
 		if (bufptr && *(++bufptr) != ',') { fix_quality = strtol(bufptr, &endp, 10); bufptr = endp; }
 
@@ -367,15 +421,32 @@ int GPSDriverAshtech::handleMessage(int len)
 		_gps_position->lat = static_cast<int>((int(lat * 0.01) + (lat * 0.01 - int(lat * 0.01)) * 100.0 / 60.0) * 10000000);
 		_gps_position->lon = static_cast<int>((int(lon * 0.01) + (lon * 0.01 - int(lon * 0.01)) * 100.0 / 60.0) * 10000000);
 		_gps_position->alt = static_cast<int>(alt * 1000);
-		_gps_position->hdop = (float)hdop / 100.0f;
-		_gps_position->vdop = (float)vdop / 100.0f;
+		_gps_position->hdop = (float)hdop;
+		_gps_position->vdop = (float)vdop;
 		_rate_count_lat_lon++;
 
 		if (coordinatesFound < 3) {
 			_gps_position->fix_type = 0;
 
 		} else {
-			_gps_position->fix_type = 3 + fix_quality;
+			if (fix_quality == 9 || fix_quality == 10) { // SBAS differential or BeiDou differential
+				_gps_position->fix_type = 4; // use RTCM differential
+
+			} else if (fix_quality == 12 || fix_quality == 22) { // RTK float or RTK float dithered
+				_gps_position->fix_type = 5;
+
+			} else if (fix_quality == 13 || fix_quality == 23) { // RTK fixed or RTK fixed dithered
+				_gps_position->fix_type = 6;
+
+			} else {
+				_gps_position->fix_type = 3 + fix_quality;
+			}
+
+			// we got a valid position, activate correction output if needed
+			if (_configure_done && _output_mode == OutputMode::RTCM &&
+			    _board == AshtechBoard::trimble_mb_two && !_correction_output_activated) {
+				activateCorrectionOutput();
+			}
 		}
 
 		_gps_position->timestamp = gps_absolute_time();
@@ -422,9 +493,14 @@ int GPSDriverAshtech::handleMessage(int len)
 		  8   Height 1 sigma error, in meters
 		  9   The checksum data, always begins with *
 		*/
-		double ashtech_time __attribute__((unused)) = 0.0, lat_err = 0.0, lon_err = 0.0, alt_err = 0.0;
-		double min_err __attribute__((unused)) = 0.0, maj_err __attribute__((unused)) = 0.0,
-		deg_from_north __attribute__((unused)) = 0.0, rms_err __attribute__((unused)) = 0.0;
+		double ashtech_time = 0.0, lat_err = 0.0, lon_err = 0.0, alt_err = 0.0;
+		double min_err = 0.0, maj_err = 0.0, deg_from_north = 0.0, rms_err = 0.0;
+
+		ASH_UNUSED(ashtech_time);
+		ASH_UNUSED(min_err);
+		ASH_UNUSED(maj_err);
+		ASH_UNUSED(deg_from_north);
+		ASH_UNUSED(rms_err);
 
 		if (bufptr && *(++bufptr) != ',') { ashtech_time = strtod(bufptr, &endp); bufptr = endp; }
 
@@ -516,8 +592,9 @@ int GPSDriverAshtech::handleMessage(int len)
 			_gps_position->satellites_used = tot_sv_visible;
 
 			if (_satellite_info) {
-				_satellite_info->count = satellite_info_s::SAT_INFO_MAX_SATELLITES;
+				_satellite_info->count = MIN(tot_sv_visible, satellite_info_s::SAT_INFO_MAX_SATELLITES);
 				_satellite_info->timestamp = gps_absolute_time();
+				ret = 2;
 			}
 		}
 
@@ -538,15 +615,157 @@ int GPSDriverAshtech::handleMessage(int len)
 				_satellite_info->azimuth[y + (this_msg_num - 1) * 4]   = sat[y].azimuth;
 			}
 		}
+
+	} else if (memcmp(_rx_buffer, "$PASHR,NAK", 10) == 0) {
+		ASH_DEBUG("Nack received");
+
+		if (_command_state == NMEACommandState::waiting) {
+			_command_state = NMEACommandState::nack;
+		}
+
+	} else if (memcmp(_rx_buffer, "$PASHR,ACK", 10) == 0) {
+		ASH_DEBUG("Ack received");
+
+		if (_command_state == NMEACommandState::waiting && _waiting_for_command == NMEACommand::Acked) {
+			_command_state = NMEACommandState::received;
+		}
+
+	} else if (memcmp(_rx_buffer, "$PASHR,PRT,", 11) == 0 && uiCalcComma == 3) {
+		if (_command_state == NMEACommandState::waiting && _waiting_for_command == NMEACommand::PRT) {
+			_command_state = NMEACommandState::received;
+			_port = _rx_buffer[11];
+			ASH_DEBUG("Connected port: %c", _port);
+		}
+
+	} else if (memcmp(_rx_buffer, "$PASHR,RID,", 11) == 0) {
+		if (_command_state == NMEACommandState::waiting && _waiting_for_command == NMEACommand::RID) {
+			_command_state = NMEACommandState::received;
+
+			if (memcmp(_rx_buffer + 11, "MB2", 3) == 0) {
+				_board = AshtechBoard::trimble_mb_two;
+
+			} else {
+				_board = AshtechBoard::other;
+			}
+
+			ASH_DEBUG("Connected board: %i", (int)_board);
+		}
+
+	} else if (memcmp(_rx_buffer, "$PASHR,RECEIPT,", 15) == 0) {
+		// this is the response to $PASHS,POS,AVG,100
+		// example: $PASHR,RECEIPT,POS,AVG,STARTED,INTERVAL,100,114502.56,28.12.2011
+		if (_command_state == NMEACommandState::waiting && _waiting_for_command == NMEACommand::RECEIPT) {
+			_command_state = NMEACommandState::received;
+		}
+
+		// when finished we get one of the follwing messages:
+		// - successful: $PASHR,RECEIPT,POS,AVG,100,FINISHED,114642.81,28.12.2011,5542.5178481,N,03739.2954994,E,176.334,OK,CONTINUOUS,100.20*09
+		// - unsuccessful: $PASHR,RECEIPT,POS,AVG,100,FINISHED,124628.01,28.12.2011,ERR
+		char *finished_find = strstr((char *)_rx_buffer, "FINISHED,");
+
+		if (finished_find) {
+			const bool error = strstr((const char *)_rx_buffer, "ERR");
+			_survey_in_start = 0;
+
+			if (error) {
+				sendSurveyInStatusUpdate(false, false);
+
+			} else {
+				// extract the position
+				double lat = 0., lon = 0.;
+				float alt = 0.f;
+				char ns = '?', ew = '?';
+				bufptr = finished_find + 9; // skip over FINISHED,
+				// skip the next 2 arguments
+				bufptr = strstr(bufptr, ",");
+
+				if (bufptr) { bufptr = strstr(bufptr + 1, ","); }
+
+				if (bufptr && *(++bufptr) != ',') { lat = strtod(bufptr, &endp); bufptr = endp; }
+
+				if (bufptr && *(++bufptr) != ',') { ns = *(bufptr++); }
+
+				if (bufptr && *(++bufptr) != ',') { lon = strtod(bufptr, &endp); bufptr = endp; }
+
+				if (bufptr && *(++bufptr) != ',') { ew = *(bufptr++); }
+
+				if (bufptr && *(++bufptr) != ',') { alt = strtod(bufptr, &endp); bufptr = endp; }
+
+				if (ns == 'S') { lat = -lat; }
+
+				if (ew == 'W') { lon = -lon; }
+
+				lat = int(lat * 0.01) + (lat * 0.01 - int(lat * 0.01)) * 100.0 / 60.0;
+				lon = int(lon * 0.01) + (lon * 0.01 - int(lon * 0.01)) * 100.0 / 60.0;
+
+				sendSurveyInStatusUpdate(false, true, lat, lon, alt);
+
+				activateRTCMOutput();
+			}
+		}
+
 	}
 
-	if (ret > 0) {
+	if (ret == 1) {
 		_gps_position->timestamp_time_relative = (int32_t)(_last_timestamp_time - _gps_position->timestamp);
+	}
+
+
+	// handle survey-in status update
+	if (_survey_in_start != 0) {
+		const gps_abstime now = gps_absolute_time();
+		uint32_t survey_in_duration = (now - _survey_in_start) / 1000000;
+
+		if (survey_in_duration != _base_settings.settings.survey_in.min_dur) {
+			_base_settings.settings.survey_in.min_dur = survey_in_duration;
+			sendSurveyInStatusUpdate(true, false);
+		}
 	}
 
 	return ret;
 }
 
+void GPSDriverAshtech::activateRTCMOutput()
+{
+	char buffer[40];
+	const char *rtcm_options[] = {
+		"$PASHS,NME,POS,%c,ON,0.2\r\n",  // reduce position updates to 5 Hz
+
+		"$PASHS,RT3,1074,%c,ON,1\r\n", // GPS observations
+		"$PASHS,RT3,1084,%c,ON,1\r\n", // GLONASS observations
+		"$PASHS,RT3,1094,%c,ON,1\r\n", // Galileo observations
+
+		"$PASHS,RT3,1114,%c,ON,1\r\n", // QZSS observations
+		"$PASHS,RT3,1124,%c,ON,1\r\n", // BDS observations
+		"$PASHS,RT3,1006,%c,ON,1\r\n", // Static position
+		"$PASHS,RT3,1033,%c,ON,31\r\n", // Antenna and receiver name
+		"$PASHS,RT3,1013,%c,ON,1\r\n", // System parameters
+		"$PASHS,RT3,1029,%c,ON,1\r\n", // ASCII message
+		"$PASHS,RT3,1230,%c,ON\r\n", // GLONASS code phase bias
+
+		// TODO: are these required (these are the ones from u-blox)?
+		"$PASHS,RT3,1005,%c,ON,1\r\n",
+		"$PASHS,RT3,1077,%c,ON,1\r\n",
+		"$PASHS,RT3,1087,%c,ON,1\r\n",
+	};
+
+	for (unsigned int conf_i = 0; conf_i < sizeof(rtcm_options) / sizeof(rtcm_options[0]); conf_i++) {
+		int str_len = snprintf(buffer, sizeof(buffer), rtcm_options[conf_i], _port);
+
+		if (writeAckedCommand(buffer, str_len, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", buffer);
+		}
+	}
+}
+
+void GPSDriverAshtech::receiveWait(unsigned timeout_min)
+{
+	gps_abstime time_started = gps_absolute_time();
+
+	while (gps_absolute_time() < time_started + timeout_min * 1000) {
+		receive(timeout_min);
+	}
+}
 
 int GPSDriverAshtech::receive(unsigned timeout)
 {
@@ -558,7 +777,7 @@ int GPSDriverAshtech::receive(unsigned timeout)
 		uint64_t time_started = gps_absolute_time();
 
 		int j = 0;
-		ssize_t bytes_count = 0;
+		int bytes_count = 0;
 
 		while (true) {
 
@@ -569,8 +788,10 @@ int GPSDriverAshtech::receive(unsigned timeout)
 				if ((l = parseChar(buf[j])) > 0) {
 					/* return to configure during configuration or to the gps driver during normal work
 					 * if a packet has arrived */
-					if (handleMessage(l) > 0) {
-						return 1;
+					int ret = handleMessage(l);
+
+					if (ret > 0) {
+						return ret;
 					}
 				}
 
@@ -612,26 +833,32 @@ int GPSDriverAshtech::parseChar(uint8_t b)
 
 	switch (_decode_state) {
 	/* First, look for sync1 */
-	case NME_DECODE_UNINIT:
+	case NMEADecodeState::uninit:
 		if (b == '$') {
-			_decode_state = NME_DECODE_GOT_SYNC1;
+			_decode_state = NMEADecodeState::got_sync1;
 			_rx_buffer_bytes = 0;
 			_rx_buffer[_rx_buffer_bytes++] = b;
+
+		} else if (b == RTCM3_PREAMBLE && _rtcm_parsing) {
+			_decode_state = NMEADecodeState::decode_rtcm3;
+			_rtcm_parsing->addByte(b);
+
 		}
 
 		break;
 
-	case NME_DECODE_GOT_SYNC1:
+	case NMEADecodeState::got_sync1:
 		if (b == '$') {
-			_decode_state = NME_DECODE_GOT_SYNC1;
+			_decode_state = NMEADecodeState::got_sync1;
 			_rx_buffer_bytes = 0;
 
 		} else if (b == '*') {
-			_decode_state = NME_DECODE_GOT_ASTERIKS;
+			_decode_state = NMEADecodeState::got_asteriks;
 		}
 
 		if (_rx_buffer_bytes >= (sizeof(_rx_buffer) - 5)) {
-			_decode_state = NME_DECODE_UNINIT;
+			ASH_DEBUG("buffer overflow");
+			_decode_state = NMEADecodeState::uninit;
 			_rx_buffer_bytes = 0;
 
 		} else {
@@ -640,26 +867,35 @@ int GPSDriverAshtech::parseChar(uint8_t b)
 
 		break;
 
-	case NME_DECODE_GOT_ASTERIKS:
+	case NMEADecodeState::got_asteriks:
 		_rx_buffer[_rx_buffer_bytes++] = b;
-		_decode_state = NME_DECODE_GOT_FIRST_CS_BYTE;
+		_decode_state = NMEADecodeState::got_first_cs_byte;
 		break;
 
-	case NME_DECODE_GOT_FIRST_CS_BYTE:
-		_rx_buffer[_rx_buffer_bytes++] = b;
-		uint8_t checksum = 0;
-		uint8_t *buffer = _rx_buffer + 1;
-		uint8_t *bufend = _rx_buffer + _rx_buffer_bytes - 3;
+	case NMEADecodeState::got_first_cs_byte: {
+			_rx_buffer[_rx_buffer_bytes++] = b;
+			uint8_t checksum = 0;
+			uint8_t *buffer = _rx_buffer + 1;
+			uint8_t *bufend = _rx_buffer + _rx_buffer_bytes - 3;
 
-		for (; buffer < bufend; buffer++) { checksum ^= *buffer; }
+			for (; buffer < bufend; buffer++) { checksum ^= *buffer; }
 
-		if ((HEXDIGIT_CHAR(checksum >> 4) == *(_rx_buffer + _rx_buffer_bytes - 2)) &&
-		    (HEXDIGIT_CHAR(checksum & 0x0F) == *(_rx_buffer + _rx_buffer_bytes - 1))) {
-			iRet = _rx_buffer_bytes;
+			if ((HEXDIGIT_CHAR(checksum >> 4) == *(_rx_buffer + _rx_buffer_bytes - 2)) &&
+			    (HEXDIGIT_CHAR(checksum & 0x0F) == *(_rx_buffer + _rx_buffer_bytes - 1))) {
+				iRet = _rx_buffer_bytes;
+			}
+
+			decodeInit();
+		}
+		break;
+
+	case NMEADecodeState::decode_rtcm3:
+		if (_rtcm_parsing->addByte(b)) {
+			ASH_DEBUG("got RTCM message with length %i", (int)_rtcm_parsing->messageLength());
+			gotRTCMMessage(_rtcm_parsing->message(), _rtcm_parsing->messageLength());
+			decodeInit();
 		}
 
-		_decode_state = NME_DECODE_UNINIT;
-		_rx_buffer_bytes = 0;
 		break;
 	}
 
@@ -668,41 +904,332 @@ int GPSDriverAshtech::parseChar(uint8_t b)
 
 void GPSDriverAshtech::decodeInit()
 {
+	_rx_buffer_bytes = 0;
+	_decode_state = NMEADecodeState::uninit;
 
+	if (_output_mode == OutputMode::RTCM) {
+		if (!_rtcm_parsing) {
+			_rtcm_parsing = new RTCMParsing();
+		}
+
+		_rtcm_parsing->reset();
+	}
 }
 
-/*
- * ashtech board configuration script
- */
-
-const char comm[] = "$PASHS,POP,20\r\n"\
-		    "$PASHS,NME,ZDA,B,ON,3\r\n"\
-		    "$PASHS,NME,GGA,B,OFF\r\n"\
-		    "$PASHS,NME,GST,B,ON,3\r\n"\
-		    "$PASHS,NME,POS,B,ON,0.05\r\n"\
-		    "$PASHS,NME,GSV,B,ON,3\r\n"\
-		    "$PASHS,SPD,A,8\r\n"\
-		    "$PASHS,SPD,B,9\r\n";
-
-int GPSDriverAshtech::configure(unsigned &baudrate, OutputMode output_mode)
+int GPSDriverAshtech::writeAckedCommand(const void *buf, int buf_length, unsigned timeout)
 {
-	if (output_mode != OutputMode::GPS) {
-		GPS_WARN("ASHTECH: Unsupported Output Mode %i", (int)output_mode);
+	if (write(buf, buf_length) != buf_length) {
 		return -1;
 	}
 
-	/* try different baudrates */
+	return waitForReply(NMEACommand::Acked, timeout);
+}
+
+int GPSDriverAshtech::waitForReply(NMEACommand command, const unsigned timeout)
+{
+	gps_abstime time_started = gps_absolute_time();
+
+	ASH_DEBUG("waiting for reply for command %i", (int)command);
+
+	_command_state = NMEACommandState::waiting;
+	_waiting_for_command = command;
+
+	while (_command_state == NMEACommandState::waiting && gps_absolute_time() < time_started + timeout * 1000) {
+		receive(timeout);
+	}
+
+	return _command_state == NMEACommandState::received ? 0 : -1;
+}
+
+int GPSDriverAshtech::configure(unsigned &baudrate, OutputMode output_mode)
+{
+	_output_mode = output_mode;
+	_correction_output_activated = false;
+	_configure_done = false;
+
+	/* Try different baudrates (115200 is the default for Trimble) and request the baudrate that we want.
+	 *
+	 * These are Ashtech proprietary commands, we can use them for auto-detection:
+	 * $PASHS for setting
+	 * $PASHQ for querying
+	 * $PASHR for a response
+	 */
 	const unsigned baudrates_to_try[] = {9600, 38400, 19200, 57600, 115200};
+	bool success = false;
 
+	unsigned test_baudrate;
 
-	for (unsigned int baud_i = 0; baud_i < sizeof(baudrates_to_try) / sizeof(baudrates_to_try[0]); baud_i++) {
-		baudrate = baudrates_to_try[baud_i];
+	for (unsigned int baud_i = 0; !success && baud_i < sizeof(baudrates_to_try) / sizeof(baudrates_to_try[0]); baud_i++) {
+		test_baudrate = baudrates_to_try[baud_i];
+
+		if (baudrate > 0 && baudrate != test_baudrate) {
+			continue; // skip to next baudrate
+		}
+
+		setBaudrate(test_baudrate);
+
+		ASH_DEBUG("baudrate set to %i", test_baudrate);
+
+		const char port_config[] = "$PASHQ,PRT\r\n";  // ask for the current port configuration
+
+		for (int run = 0; run < 2; ++run) { // try several times
+			write(port_config, sizeof(port_config) - 1);
+
+			if (waitForReply(NMEACommand::PRT, ASH_RESPONSE_TIMEOUT) == 0) {
+				ASH_DEBUG("got port for baudrate %i", test_baudrate);
+				success = true;
+				break;
+			}
+		}
+	}
+
+	if (!success) {
+		return -1;
+	}
+
+	// We successfully got a response and know to which port we are connected. Now set the desired baudrate
+	// if it's different from the current one.
+	const unsigned desired_baudrate = 115200; // changing this requires also changing the SPD command
+
+	baudrate = test_baudrate;
+
+	if (baudrate != desired_baudrate) {
+		baudrate = desired_baudrate;
+		const char baud_config[] = "$PASHS,SPD,%c,9\r\n"; // configure baudrate to 115200
+		char baud_config_str[sizeof(baud_config)];
+		int len = snprintf(baud_config_str, sizeof(baud_config_str), baud_config, _port);
+		write(baud_config_str, len);
+		decodeInit();
+		receiveWait(200);
+		decodeInit();
 		setBaudrate(baudrate);
 
-		if (write(comm, sizeof(comm)) != sizeof(comm)) {
+		success = false;
+
+		for (int run = 0; run < 10; ++run) {
+			// We ask for the port config again. If we get a reply, we know that the changed settings work.
+			const char port_config[] = "$PASHQ,PRT\r\n";
+			write(port_config, sizeof(port_config) - 1);
+
+			if (waitForReply(NMEACommand::PRT, ASH_RESPONSE_TIMEOUT) == 0) {
+				success = true;
+				break;
+			}
+		}
+
+		if (!success) {
+			return -1;
+		}
+
+		ASH_DEBUG("Successfully configured the baudrate");
+	}
+
+
+// Additional commands that might be useful:
+//		Reading firmware version:
+//			$PASHQ,VER
+//		Reading installed firmware options:
+//			$PASHQ,OPTION
+//		The output for the Trimble MB-two is:
+//			$PASHR,OPTION,0,SERIAL NUMBER,5730C00370*3E
+//			$PASHR,OPTION,@1,GEOFENCING_WW,034017C7114ED*36
+//			$PASHR,OPTION,N,GPS,0340173F8924D*66
+//			$PASHR,OPTION,G,GLONASS,0340178A9E138*69
+//			$PASHR,OPTION,B,BEIDOU,03401434EC35A*4D
+//			$PASHR,OPTION,X,L1TRACKING,0340119C547B8*40
+//			$PASHR,OPTION,Y,L2TRACKING,034012CD03607*42
+//			$PASHR,OPTION,W,20HZ,034016B5A5225*2A
+//			$PASHR,OPTION,J,RTKROVER,034010C800693*41
+//			$PASHR,OPTION,K,RTKBASE,03401065AB099*7E
+//			$PASHR,OPTION,D,DUO,0340138851415*70
+//			$PASHR,OPTION,S,L3TRACKING,034011C7AB73D*48
+//		Reset the full configuration (however it will lead to a reboot and requires about 15s waiting time)
+//			$PASHS,RST
+
+	// get the board identification
+	const char board_identification[] = "$PASHQ,RID\r\n";
+
+	if (write(board_identification, sizeof(board_identification) - 1) == sizeof(board_identification) - 1) {
+		if (waitForReply(NMEACommand::RID, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", board_identification);
 			return -1;
 		}
 	}
 
-	return setBaudrate(115200);
+	// Now configure the messages we want
+
+	const char update_rate[] = "$PASHS,POP,20\r\n"; // set internal update rate to 20 Hz
+
+	if (writeAckedCommand(update_rate, sizeof(update_rate) - 1, ASH_RESPONSE_TIMEOUT) != 0) {
+		ASH_DEBUG("command %s failed", update_rate);
+		// for some reason we don't get a response here
+	}
+
+	// Enable dual antenna mode (2: both antennas are L1/L2 GNSS capable, flex mode, avoids the need to determine
+	// the baseline length through a prior calibration stage)
+	// Needs to be set before other commands
+	const bool use_dual_mode = output_mode == OutputMode::GPS && _board == AshtechBoard::trimble_mb_two;
+
+	if (use_dual_mode) {
+		ASH_DEBUG("Enabling DUO mode");
+		const char duo_mode[] = "$PASHS,SNS,DUO,2\r\n";
+
+		if (writeAckedCommand(duo_mode, sizeof(duo_mode) - 1, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", duo_mode);
+		}
+
+	} else {
+		const char solo_mode[] = "$PASHS,SNS,SOL\r\n";
+
+		if (writeAckedCommand(solo_mode, sizeof(solo_mode) - 1, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", solo_mode);
+		}
+	}
+
+	char buffer[40];
+	const char *config_options[] = {
+		"$PASHS,NME,ALL,%c,OFF\r\n",    // disable all NMEA and NMEA-Like Messages
+		"$PASHS,ATM,ALL,%c,OFF\r\n",    // disable all ATM (ATOM) Messages
+		"$PASHS,OUT,%c,ON\r\n",         // enable periodic output
+		"$PASHS,NME,ZDA,%c,ON,3\r\n",   // enable ZDA (date & time) output every 3s
+		"$PASHS,NME,GST,%c,ON,3\r\n",   // position accuracy messages
+		"$PASHS,NME,POS,%c,ON,0.05\r\n",// position & velocity (we can go up to 20Hz if FW option [W] is given and to 50Hz if [8] is given)
+		"$PASHS,NME,GSV,%c,ON,1\r\n"    // satellite status
+	};
+
+	for (unsigned int conf_i = 0; conf_i < sizeof(config_options) / sizeof(config_options[0]); conf_i++) {
+		int len = snprintf(buffer, sizeof(buffer), config_options[conf_i], _port);
+
+		if (writeAckedCommand(buffer, len, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", buffer);
+			// some commands are not acked (e.g. GSV), so don't make this fatal
+		}
+	}
+
+	if (use_dual_mode) {
+		// enable heading output
+		const char heading_output[] = "$PASHS,NME,HDT,%c,ON,0.05\r\n";
+		int len = snprintf(buffer, sizeof(buffer), heading_output, _port);
+
+		if (writeAckedCommand(buffer, len, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", buffer);
+		}
+	}
+
+
+	if (output_mode == OutputMode::RTCM && _board == AshtechBoard::trimble_mb_two) {
+		SurveyInStatus status;
+		status.latitude = status.longitude = (double)NAN;
+		status.altitude = NAN;
+		status.duration = 0;
+		status.mean_accuracy = 0;
+		const bool valid = false;
+		const bool active = true;
+		status.flags = (int)valid | ((int)active << 1);
+		surveyInStatus(status);
+	}
+
+	_configure_done = true;
+	return 0;
+}
+
+void GPSDriverAshtech::activateCorrectionOutput()
+{
+	if (_correction_output_activated || _output_mode != OutputMode::RTCM) {
+		return;
+	}
+
+	_correction_output_activated = true;
+	char buffer[100];
+
+	if (_base_settings.type == BaseSettingsType::survey_in) {
+		ASH_DEBUG("enabling survey-in");
+
+		// setup the base reference: average the position over N seconds
+		const char avg_pos[] = "$PASHS,POS,AVG,%i\r\n";
+		// alternatively use the current position as reference: "$PASHS,POS,CUR\r\n"
+		int len = snprintf(buffer, sizeof(buffer), avg_pos, (int)_base_settings.settings.survey_in.min_dur);
+
+		write(buffer, len);
+
+		if (waitForReply(NMEACommand::RECEIPT, ASH_RESPONSE_TIMEOUT) != 0) {
+			ASH_DEBUG("command %s failed", buffer);
+		}
+
+
+		const char *config_options[] = {
+			"$PASHS,ANP,OWN,TRM55971.00\r\n",    // set antenna name (arbitrary)
+			"$PASHS,STI,0001\r\n"         // enter a base ID
+		};
+
+
+		for (unsigned int conf_i = 0; conf_i < sizeof(config_options) / sizeof(config_options[0]); conf_i++) {
+			if (writeAckedCommand(config_options[conf_i], strlen(config_options[conf_i]), ASH_RESPONSE_TIMEOUT) != 0) {
+				ASH_DEBUG("command %s failed", config_options[conf_i]);
+			}
+		}
+
+		_base_settings.settings.survey_in.min_dur = 0; // use it as counter how long survey-in has been active
+		_survey_in_start = gps_absolute_time();
+		sendSurveyInStatusUpdate(true, false);
+
+	} else {
+		ASH_DEBUG("setting base station position");
+
+		const FixedPositionSettings &settings = _base_settings.settings.fixed_position;
+		char ns, ew;
+		double latitude = settings.latitude;
+
+		if (latitude < 0.) {
+			latitude = -latitude;
+			ns = 'S';
+
+		} else {
+			ns = 'N';
+		}
+
+		// convert to ddmm.mmmmmm format
+		latitude = ((int)latitude) * 100. + (latitude - ((int)latitude)) * 60.;
+
+		double longitude = settings.longitude;
+
+		if (longitude < 0.) {
+			longitude = -longitude;
+			ew = 'W';
+
+		} else {
+			ew = 'E';
+		}
+
+		// convert to ddmm.mmmmmm format
+		longitude = ((int)longitude) * 100. + (longitude - ((int)longitude)) * 60.;
+
+		int len = snprintf(buffer, sizeof(buffer), "$PASHS,POS,%.8f,%c,%.8f,%c,%.5f,PC1",
+				   latitude, ns, longitude, ew, (double)settings.altitude);
+
+		if (len >= 0 && len < (int)sizeof(buffer)) {
+			if (writeAckedCommand(buffer, len, ASH_RESPONSE_TIMEOUT) != 0) {
+				ASH_DEBUG("command %s failed", config_options[conf_i]);
+			}
+
+		} else {
+			ASH_DEBUG("snprintf failed (buffer too short)");
+		}
+
+		activateRTCMOutput();
+		sendSurveyInStatusUpdate(false, true, settings.latitude, settings.longitude, settings.altitude);
+	}
+}
+
+void
+GPSDriverAshtech::sendSurveyInStatusUpdate(bool active, bool valid, double latitude, double longitude, float altitude)
+{
+	SurveyInStatus status;
+	status.latitude = latitude;
+	status.longitude = longitude;
+	status.altitude = altitude;
+	status.duration = _base_settings.settings.survey_in.min_dur;
+	status.mean_accuracy = 0; // unknown
+	status.flags = (int)valid | ((int)active << 1);
+	surveyInStatus(status);
 }

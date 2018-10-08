@@ -43,16 +43,20 @@
 #ifndef INERTIALSENSE_H_
 #define INERTIALSENSE_H_
 
-#include "gps_helper.h"
+#include "base_station.h"
 #include "../../definitions.h"
 
 #define GPS_UTC_OFFSET 315964782 // as of 2017
 #define IS_MESSAGE_BUFFER_SIZE 512
 
-extern "C" {
-#include "inertialsense_serial_protocol/ISComm.h"
+extern "C"
+{
+#include "InertialSenseSDK/src/ISComm.h"
+#include "InertialSenseSDK/src/data_sets.h"
+#include "InertialSenseSDK/src/ISPose.h"
 }
-class GPSDriverInertialSense : public GPSHelper
+
+class GPSDriverInertialSense : public GPSBaseStationSupport
 {
 public:
   GPSDriverInertialSense(Interface gpsInterface, GPSCallbackPtr callback, void* callback_user,
@@ -70,18 +74,18 @@ public:
 //	static void IS_RTCM_rx_wrapper(CMHANDLE cmHandle, com_manager_pass_through_t passThroughType, int pHandle, const unsigned char* data, int dataLength);
 
 private:
-	void GPS_callback(gps_nav_t* data);
-	void INS2_callback(ins_2_t* data);
+    void gpsPosCallback(gps_pos_t* data);
+    void ins2Callback(ins_2_t* data);
 
-	bool			_got_gps;
-	bool		  _got_sat_info;
+    bool			_got_gps;
+    bool		  _got_sat_info;
 
-	struct vehicle_gps_position_s *_gps_position {nullptr};
-	struct satellite_info_s *_satellite_info {nullptr};
+    struct vehicle_gps_position_s *_gps_position {nullptr};
+    struct satellite_info_s *_satellite_info {nullptr};
 
-	gps_abstime start_time;
-
-	uint8_t message_buffer_[IS_MESSAGE_BUFFER_SIZE];
+    gps_abstime start_time;
+    uint8_t message_buffer_[IS_MESSAGE_BUFFER_SIZE];
+    is_comm_instance_t is_comm_;
 };
 
 

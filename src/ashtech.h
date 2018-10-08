@@ -33,55 +33,111 @@
  *
  ****************************************************************************/
 
-/* @file ASHTECH protocol definitions */
+/** @file ASHTECH protocol definitions */
 
 #pragma once
 
 #include "gps_helper.h"
+#include "base_station.h"
 #include "../../definitions.h"
+#include <cmath>
+
+class RTCMParsing;
 
 #define ASHTECH_RECV_BUFFER_SIZE 512
 
+#define ASH_RESPONSE_TIMEOUT	200		// ms, timeout for waiting for a response
 
-class GPSDriverAshtech : public GPSHelper
+class GPSDriverAshtech : public GPSBaseStationSupport
 {
 public:
+	/**
+	 * @param heading_offset heading offset in radians [-pi, pi]. It is substracted from the measurement.
+	 */
 	GPSDriverAshtech(GPSCallbackPtr callback, void *callback_user, struct vehicle_gps_position_s *gps_position,
-			 struct satellite_info_s *satellite_info);
-	virtual ~GPSDriverAshtech() = default;
+			 struct satellite_info_s *satellite_info, float heading_offset = 0.f);
+	virtual ~GPSDriverAshtech();
 
-	int receive(unsigned timeout);
-	int configure(unsigned &baudrate, OutputMode output_mode);
+	int receive(unsigned timeout) override;
+	int configure(unsigned &baudrate, OutputMode output_mode) override;
 
 private:
+	enum class NMEACommand {
+		Acked, // Command that returns a (N)Ack
+		PRT,   // port config
+		RID,   // board identification
+		RECEIPT// board identification
+	};
+
+	enum class NMEACommandState {
+		idle,
+		waiting,
+		nack,
+		received
+	};
+
+	enum class NMEADecodeState {
+		uninit,
+		got_sync1,
+		got_asteriks,
+		got_first_cs_byte,
+		decode_rtcm3
+	};
+
+	enum class AshtechBoard {
+		trimble_mb_two,
+		other
+	};
+
 	void decodeInit(void);
 	int handleMessage(int len);
 	int parseChar(uint8_t b);
 
-	/** Read int ASHTECH parameter */
-	int32_t read_int();
-	/** Read float ASHTECH parameter */
-	double read_float();
-	/** Read char ASHTECH parameter */
-	char read_char();
+	/**
+	 * Write a command and wait for a (N)Ack
+	 * @return 0 on success, <0 otherwise
+	 */
+	int writeAckedCommand(const void *buf, int buf_length, unsigned timeout);
 
-	enum ashtech_decode_state_t {
-		NME_DECODE_UNINIT,
-		NME_DECODE_GOT_SYNC1,
-		NME_DECODE_GOT_ASTERIKS,
-		NME_DECODE_GOT_FIRST_CS_BYTE
-	};
+	int waitForReply(NMEACommand command, const unsigned timeout);
+
+	/**
+	 * receive data for at least the specified amount of time
+	 */
+	void receiveWait(unsigned timeout_min);
+
+	/**
+	 * enable output of correction output
+	 */
+	void activateCorrectionOutput();
+
+	void sendSurveyInStatusUpdate(bool active, bool valid, double latitude = (double)NAN, double longitude = (double)NAN,
+				      float altitude = NAN);
+
+	void activateRTCMOutput();
 
 	struct satellite_info_s *_satellite_info {nullptr};
 	struct vehicle_gps_position_s *_gps_position {nullptr};
 	uint64_t _last_timestamp_time{0};
-	int _ashtechlog_fd{-1};
 
-	ashtech_decode_state_t _decode_state{NME_DECODE_UNINIT};
-	uint8_t _rx_buffer[ASHTECH_RECV_BUFFER_SIZE] {};
+	NMEADecodeState _decode_state{NMEADecodeState::uninit};
+	uint8_t _rx_buffer[ASHTECH_RECV_BUFFER_SIZE];
 	uint16_t _rx_buffer_bytes{};
 	bool _got_pashr_pos_message{false}; /**< If we got a PASHR,POS message, we will ignore GGA messages */
-	bool _parse_error{}; /**< parse error flag */
-	char *_parse_pos{}; /**< parse position */
+
+	NMEACommand _waiting_for_command;
+	NMEACommandState _command_state{NMEACommandState::idle};
+	char _port{'A'}; /**< port we are connected to (e.g. 'A') */
+	AshtechBoard _board{AshtechBoard::other}; /**< board we are connected to */
+
+	RTCMParsing	*_rtcm_parsing{nullptr};
+
+	gps_abstime _survey_in_start{0};
+
+	OutputMode _output_mode{OutputMode::GPS};
+	bool _correction_output_activated{false};
+	bool _configure_done{false};
+
+	float _heading_offset;
 };
 
