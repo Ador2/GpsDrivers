@@ -1,8 +1,6 @@
-#include <functional>
 #include "inertialsense.h"
 
 using namespace std;
-using namespace std::placeholders;
 
 #define IS_WARN(...)		{GPS_WARN(__VA_ARGS__);}
 #define IS_DEBUG(...)		{/*GPS_WARN(__VA_ARGS__);*/}
