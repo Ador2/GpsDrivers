@@ -123,7 +123,7 @@ void GPSDriverInertialSense::gpsPosCallback(gps_pos_t *data)
     break;
   }
 
-//  _gps_position->satellites_used = (uint8_t)(data->status & GPS_STATUS_NUM_SATS_USED_MASK);
+  _gps_position->satellites_used = (uint8_t)(data->status & GPS_STATUS_NUM_SATS_USED_MASK);
 //  _satellite_info->count = _gps_position->satellites_used;
 
 //  _gps_position->timestamp_time_relative = gps_absolute_time() - start_time;
