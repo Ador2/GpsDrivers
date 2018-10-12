@@ -33,11 +33,17 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
 //  uint32_t uINS_sys_config;
   uint32_t uINS_RTK_config;
 
-  if (output_mode == OutputMode::RTCM)
-  {
-    // output RTCM3 on both ports
-    uINS_RTK_config = RTK_CFG_BITS_BASE_OUTPUT_GPS1_RTCM3_SER0 | RTK_CFG_BITS_BASE_OUTPUT_GPS1_RTCM3_SER1;
-  }
+  is_comm_.buffer = message_buffer_;
+  is_comm_.bufferSize = sizeof(message_buffer_);
+  is_comm_init(&is_comm_);
+
+  uINS_RTK_config = RTK_CFG_BITS_RTK_ROVER | RTK_CFG_BITS_RTK_BASE_IS_IDENTICAL_TO_ROVER;
+
+//  if (output_mode == OutputMode::RTCM)
+//  {
+//    // output RTCM3 on both ports
+//    uINS_RTK_config = RTK_CFG_BITS_BASE_OUTPUT_GPS1_RTCM3_SER0 | RTK_CFG_BITS_BASE_OUTPUT_GPS1_RTCM3_SER1;
+//  }
 
 
   // Configure the Appropriate sys_config bits for RTCM handling
@@ -45,8 +51,9 @@ int GPSDriverInertialSense::configure(unsigned &baud, OutputMode output_mode)
   int messageSize = is_comm_set_data(&is_comm_, DID_FLASH_CONFIG, offsetof(nvm_flash_cfg_t, RTKCfgBits), sizeof(uint32_t), &uINS_RTK_config);
   write(message_buffer_, messageSize);
 
-  messageSize = is_comm_get_data_rmc(&is_comm_, RMC_BITS_GPS1_POS | RMC_BITS_GPS1_VEL | RMC_BITS_INS2);
+  messageSize = is_comm_get_data_rmc(&is_comm_, RMC_BITS_GPS1_POS | RMC_BITS_INS2);
   write(message_buffer_, messageSize);
+  (void)messageSize;
 
   if (receive(1000) != 0)
   {
@@ -81,16 +88,16 @@ void GPSDriverInertialSense::ins2Callback(ins_2_t *data)
 
     _gps_position->cog_rad = atan2(_gps_position->vel_e_m_s, _gps_position->vel_n_m_s);
     _gps_position->c_variance_rad = (n2*_gps_position->epv + e2*_gps_position->epv)/((n2 + e2)*(n2 + e2));
+    _got_gps = true;
 }
 
 void GPSDriverInertialSense::gpsPosCallback(gps_pos_t *data)
 {
   _got_sat_info = true;
-  _got_gps = true;
 
   _gps_position->alt_ellipsoid = (int32_t)(data->hMSL * 1e3f);
 
-
+  _gps_position->vdop = data->vAcc;
   _gps_position->hdop = data->pDop;
   _gps_position->hdop = data->pDop * 1.2f; // This is a hack because the inertialsense doesn't output this directly
 
@@ -116,19 +123,21 @@ void GPSDriverInertialSense::gpsPosCallback(gps_pos_t *data)
     break;
   }
 
-  _gps_position->timestamp_time_relative = gps_absolute_time() - start_time;
-  if (data->week > 0)
-  {
-    _gps_position->time_utc_usec = GPS_UTC_OFFSET + (uint64_t)(data->week*7*24*3600*1e9f) + (uint64_t)(data->towOffset*1e9);
-  }
-  _satellite_info->count = _gps_position->satellites_used = data->status & (0x00FF);
+//  _gps_position->satellites_used = (uint8_t)(data->status & GPS_STATUS_NUM_SATS_USED_MASK);
+//  _satellite_info->count = _gps_position->satellites_used;
 
-  // For now, because we aren't getting a true survey status, let's just use the reported accuracy of the GPS position
-  SurveyInStatus status;
-  status.duration = _gps_position->timestamp_time_relative/1e6f;
-  status.flags = (_gps_position->eph < 2.0f);
-  status.mean_accuracy = _gps_position->eph*1000;
-  surveyInStatus(status);
+//  _gps_position->timestamp_time_relative = gps_absolute_time() - start_time;
+//  if (data->week > 0)
+//  {
+//    _gps_position->time_utc_usec = GPS_UTC_OFFSET + (uint64_t)(data->week*7*24*3600*1e9f) + (uint64_t)(data->towOffset*1e9);
+//  }
+
+//  // For now, because we aren't getting a true survey status, let's just use the reported accuracy of the GPS position
+//  SurveyInStatus status;
+//  status.duration = _gps_position->timestamp_time_relative/1e6f;
+//  status.flags = (_gps_position->eph < 2.0f);
+//  status.mean_accuracy = _gps_position->eph*1000;
+//  surveyInStatus(status);
 }
 
 
@@ -156,38 +165,25 @@ int GPSDriverInertialSense::receive(unsigned timeout)
             break;
         case DID_INS_2:
             ins2Callback((ins_2_t*)message_buffer_);
-            return 0b01;
+            return 2;
+            break;
         case DID_GPS1_POS:
             gpsPosCallback((gps_pos_t*)message_buffer_);
-            return 0b11;
-            return 0;
+            return 1;
             break;
         default:
             break;
         }
     }
-
   }
-  uint8_t ret = 0;
-
-  if (_got_gps)
-  {
-    ret |= 0b1;
-  }
-
-  if(_got_sat_info)
-  {
-    ret |= 0b10;
-  }
-
-  return ret;
+  return 0;
 }
 
 void GPSDriverInertialSense::setSurveyInSpecs(uint32_t survey_in_acc_limit, uint32_t survey_in_min_dur)
 {
-  // TODO: We still  have to enable this on the InertialSense
-    (void) survey_in_acc_limit;
-    (void) survey_in_min_dur;
+//  // TODO: We still  have to enable this on the InertialSense
+//    (void) survey_in_acc_limit;
+//    (void) survey_in_min_dur;
 }
 
 /**
