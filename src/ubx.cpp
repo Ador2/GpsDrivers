@@ -1376,7 +1376,7 @@ GPSDriverUBX::payloadRxDone()
 		_gps_position->timestamp = gps_absolute_time();
 		_last_timestamp_time = _gps_position->timestamp;
 
-		_rate_count_vel++;
+        _rate_count_vel++;
 		_rate_count_lat_lon++;
 
 		_got_posllh = true;

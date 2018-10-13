@@ -84,11 +84,12 @@ void GPSDriverInertialSense::ins2Callback(ins_2_t *data)
     float n2 = _gps_position->vel_n_m_s*_gps_position->vel_n_m_s;
     float e2 = _gps_position->vel_e_m_s*_gps_position->vel_e_m_s;
     _gps_position->vel_m_s = pow(n2 + e2 + _gps_position->vel_d_m_s*_gps_position->vel_d_m_s, 0.5);
-    _gps_position->vel_ned_valid = true;
 
     _gps_position->cog_rad = atan2(_gps_position->vel_e_m_s, _gps_position->vel_n_m_s);
     _gps_position->c_variance_rad = (n2*_gps_position->epv + e2*_gps_position->epv)/((n2 + e2)*(n2 + e2));
     _got_gps = true;
+
+    _gps_position->vel_ned_valid = true;
 }
 
 void GPSDriverInertialSense::gpsPosCallback(gps_pos_t *data)
@@ -97,9 +98,11 @@ void GPSDriverInertialSense::gpsPosCallback(gps_pos_t *data)
 
   _gps_position->alt_ellipsoid = (int32_t)(data->hMSL * 1e3f);
 
-  _gps_position->vdop = data->vAcc;
-  _gps_position->hdop = data->pDop;
-  _gps_position->hdop = data->pDop * 1.2f; // This is a hack because the inertialsense doesn't output this directly
+//  _gps_position->selected = 0;
+
+  _gps_position->vdop = (data->vAcc)/2.5f; // Dilution of precision, not accuracy, so we'll divide by our specification
+  _gps_position->hdop = (data->pDop)/2.5f;
+//  _gps_position->hdop = data->pDop * 1.2f; // This is a hack because the inertialsense doesn't output this directly
 
   _gps_position->noise_per_ms = 0.0f;
   _gps_position->jamming_indicator = 0.0f;
@@ -111,26 +114,33 @@ void GPSDriverInertialSense::gpsPosCallback(gps_pos_t *data)
   {
   case (GPS_STATUS_FIX_NONE):
     _gps_position->fix_type = 0;
+    //_gps_position->vel_ned_valid = false;
     break;
   case (GPS_STATUS_FIX_2D):
     _gps_position->fix_type = 2;
+    //_gps_position->vel_ned_valid = true;
     break;
   case (GPS_STATUS_FIX_3D):
     _gps_position->fix_type = 3;
+    //_gps_position->vel_ned_valid = true;
     break;
   default:
     _gps_position->fix_type = 0;
+    //_gps_position->vel_ned_valid = false;
     break;
   }
 
+  _gps_position->timestamp = gps_absolute_time();
+//  _satellite_info->timestamp = gps_absolute_time();
+
   _gps_position->satellites_used = (uint8_t)(data->status & GPS_STATUS_NUM_SATS_USED_MASK);
 //  _satellite_info->count = _gps_position->satellites_used;
+  _gps_position->timestamp_time_relative = gps_absolute_time() - start_time;
 
-//  _gps_position->timestamp_time_relative = gps_absolute_time() - start_time;
-//  if (data->week > 0)
-//  {
-//    _gps_position->time_utc_usec = GPS_UTC_OFFSET + (uint64_t)(data->week*7*24*3600*1e9f) + (uint64_t)(data->towOffset*1e9);
-//  }
+  if (data->week > 0)
+  {
+    _gps_position->time_utc_usec = GPS_UTC_OFFSET + (uint64_t)(data->week*7*24*3600*1e9f) + (uint64_t)(data->towOffset*1e9);
+  }
 
 //  // For now, because we aren't getting a true survey status, let's just use the reported accuracy of the GPS position
 //  SurveyInStatus status;
